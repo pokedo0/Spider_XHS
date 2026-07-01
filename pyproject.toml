@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spider-xhs"
+version = "0.1.0"
+description = "Cookie-authenticated Xiaohongshu PC crawling facade."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "PyExecJS",
+    "requests",
+    "loguru",
+    "python-dotenv",
+    "retry",
+    "openpyxl",
+    "aiohttp",
+    "opencv-python",
+    "numpy",
+    "qrcode",
+]
+
+[tool.setuptools.packages.find]
+include = ["apis*", "spider*", "spider_xhs*", "static*", "xhs_utils*"]
+
+[tool.setuptools.package-data]
+static = ["*.js"]
