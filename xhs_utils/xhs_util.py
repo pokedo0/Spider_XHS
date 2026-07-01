@@ -13,7 +13,13 @@ _STATIC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'sta
 
 def _compile_static_js(filename):
     with open(os.path.join(_STATIC_DIR, filename), 'r', encoding='utf-8') as f:
-        return execjs.compile(f.read())
+        source = f.read()
+    for dependency in ('xhs_xray_pack1.js', 'xhs_xray_pack2.js'):
+        absolute_path = os.path.join(_STATIC_DIR, dependency).replace(os.sep, '/')
+        absolute_require = f"require({json.dumps(absolute_path)})"
+        for relative_path in (f'./{dependency}', f'../static/{dependency}', f'./static/{dependency}'):
+            source = source.replace(f"require('{relative_path}')", absolute_require)
+    return execjs.compile(source)
 
 
 _JS_CACHE = {}
