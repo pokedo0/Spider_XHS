@@ -30,7 +30,7 @@ env.bak/
 venv.bak/
 .claude
 CLAUDE.md
-AGENTS.md
+#AGENTS.md
 .agent
 docs
 docx
