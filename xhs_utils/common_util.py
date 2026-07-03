@@ -6,7 +6,7 @@ import binascii
 import json
 
 import execjs
-import requests
+from xhs_utils import http_client as requests
 from loguru import logger
 from dotenv import load_dotenv
 

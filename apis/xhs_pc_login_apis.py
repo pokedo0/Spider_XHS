@@ -3,7 +3,7 @@ import time
 import random
 import uuid
 
-import requests
+from xhs_utils import http_client as requests
 import qrcode
 from loguru import logger
 

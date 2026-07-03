@@ -1,4 +1,5 @@
 PyExecJS
+curl_cffi
 requests
 loguru
 python-dotenv

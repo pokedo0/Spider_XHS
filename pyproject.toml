@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "PyExecJS",
+    "curl_cffi",
     "requests",
     "loguru",
     "python-dotenv",

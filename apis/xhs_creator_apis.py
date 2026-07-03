@@ -5,7 +5,7 @@ import time
 
 import cv2
 import numpy as np
-import requests
+from xhs_utils import http_client as requests
 from loguru import logger
 from xhs_utils.cookie_util import trans_cookies
 from xhs_utils.http_util import REQUEST_TIMEOUT

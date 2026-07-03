@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 import openpyxl
-import requests
+from xhs_utils import http_client as requests
 from loguru import logger
 from retry import retry
 
