@@ -88,6 +88,10 @@ The synced spec is:
 D:\Program\java_project\RedNote2TG\openspec\specs\pc-cookie-facade\spec.md
 ```
 
+## Testing and Scratch Scripts
+
+Whenever you are asked to write scratch scripts, integration tests, or perform any code-based testing and experimentation, always place these files under the `tests/` directory (e.g., `tests/scratch_extract.py` or `tests/test_something.py`). Do not clutter the project root with temporary or test scripts.
+
 ## Git Notes
 
 Do not auto-commit. This repository may contain local IDE and CodeGraph files. Avoid reverting user changes or generated indexes unless explicitly asked.

@@ -12,6 +12,34 @@ from retry import retry
 from xhs_utils.http_util import REQUEST_TIMEOUT
 
 
+def pick_best_video_stream(video_info):
+    """选出最佳视频流，返回 (backup_url, master_url)。
+
+    策略：
+      1. 优先从 h265 流中按 avg_bitrate 降序取最高码率那路。
+      2. h265 为空时，从 h264 流中按 avg_bitrate 降序取最高码率那路。
+      3. 最终返回该路的 (backup_url, master_url)，供下载时先尝试 backup。
+    """
+    stream_dict = video_info.get('media', {}).get('stream', {})
+
+    def best_in(streams):
+        """在给定流列表中按 avg_bitrate 取最大值那一路。"""
+        valid = [s for s in (streams or []) if s.get('avg_bitrate', 0) > 0]
+        if not valid:
+            return None
+        return max(valid, key=lambda s: s['avg_bitrate'])
+
+    chosen = best_in(stream_dict.get('h265', []))
+    if chosen is None:
+        chosen = best_in(stream_dict.get('h264', []))
+    if chosen is None:
+        return None, None
+
+    backup_url = (chosen.get('backup_urls') or [None])[0]
+    master_url = chosen.get('master_url')
+    return backup_url, master_url
+
+
 def norm_str(value):
     new_str = re.sub(r"[\\/:*?\"<>| ]+", "", value).replace('\n', '').replace('\r', '')
     return new_str
@@ -97,18 +125,20 @@ def handle_note_info(data):
             pass
     if note_type == '视频':
         video_cover = image_list[0] if image_list else None
-        video_addr = None
         video_info = data.get('note_card', {}).get('video', {})
-        streams = video_info.get('media', {}).get('stream', {}).get('h264', [])
-        if streams:
-            video_addr = streams[0].get('master_url') or streams[0].get('url')
-        if not video_addr and 'consumer' in video_info:
+        backup_url, master_url = pick_best_video_stream(video_info)
+        # 兜底：旧式 consumer.origin_video_key 直链
+        if not backup_url and not master_url and 'consumer' in video_info:
             origin_key = video_info['consumer'].get('origin_video_key')
             if origin_key:
-                video_addr = f"https://sns-video-bd.xhscdn.com/{origin_key}"
+                master_url = f"https://sns-video-bd.xhscdn.com/{origin_key}"
+        # video_addr 作为主下载链接（无鉴权 backup），video_addr_fallback 为备用签名链接
+        video_addr = backup_url or master_url
+        video_addr_fallback = master_url if backup_url else None
     else:
         video_cover = None
         video_addr = None
+        video_addr_fallback = None
     tags_temp = data['note_card']['tag_list']
     tags = []
     for tag in tags_temp:
@@ -137,6 +167,7 @@ def handle_note_info(data):
         'share_count': share_count,
         'video_cover': video_cover,
         'video_addr': video_addr,
+        'video_addr_fallback': video_addr_fallback,
         'image_list': image_list,
         'tags': tags,
         'upload_time': upload_time,
@@ -207,8 +238,9 @@ def save_to_xlsx(datas, file_path, type='note'):
     wb.save(file_path)
     logger.info(f'数据保存至 {file_path}')
 
-def download_media(path, name, url, type):
-    if not url:
+def download_media(path, name, url, type, fallback_url=None):
+    """下载媒体文件。视频优先使用 url（无鉴权 backup），失败时尝试 fallback_url（签名 master）。"""
+    if not url and not fallback_url:
         raise ValueError(f'{type} url is empty: {name}')
     file_path = Path(path) / f'{name}.{"jpg" if type == "image" else "mp4"}'
     if type == 'image':
@@ -218,14 +250,23 @@ def download_media(path, name, url, type):
         with open(file_path, mode="wb") as f:
             f.write(content)
     elif type == 'video':
-        res = requests.get(url, stream=True, timeout=REQUEST_TIMEOUT)
-        res.raise_for_status()
-        size = 0
-        chunk_size = 1024 * 1024
-        with open(file_path, mode="wb") as f:
-            for data in res.iter_content(chunk_size=chunk_size):
-                f.write(data)
-                size += len(data)
+        urls_to_try = [u for u in [url, fallback_url] if u]
+        last_exc = None
+        for attempt_url in urls_to_try:
+            try:
+                res = requests.get(attempt_url, stream=True, timeout=REQUEST_TIMEOUT)
+                res.raise_for_status()
+                size = 0
+                chunk_size = 1024 * 1024
+                with open(file_path, mode="wb") as f:
+                    for data in res.iter_content(chunk_size=chunk_size):
+                        f.write(data)
+                        size += len(data)
+                return  # 成功则直接返回
+            except Exception as exc:
+                logger.warning(f"download_media: {attempt_url} 失败 ({exc})，尝试下一个链接")
+                last_exc = exc
+        raise last_exc
 
 def save_user_detail(user, path):
     with open(Path(path) / 'detail.txt', mode="w", encoding="utf-8") as f:
@@ -292,8 +333,13 @@ def download_note(note_info, path, save_choice):
             download_media(save_path, 'cover', note_info['video_cover'], 'image')
         else:
             logger.warning(f"video cover url is empty: {note_id}")
-        if note_info.get('video_addr'):
-            download_media(save_path, 'video', note_info['video_addr'], 'video')
+        if note_info.get('video_addr') or note_info.get('video_addr_fallback'):
+            download_media(
+                save_path, 'video',
+                note_info.get('video_addr'),
+                'video',
+                fallback_url=note_info.get('video_addr_fallback'),
+            )
         else:
             logger.warning(f"video url is empty: {note_id}")
     return save_path
