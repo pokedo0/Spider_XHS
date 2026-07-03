@@ -94,6 +94,24 @@ def handle_user_info(data, user_id):
         'tags': tags,
     }
 
+def _pick_live_video_url(image_item):
+    """从单个 image_list 元素中提取 Live Photo 视频 URL。
+
+    策略：backup_urls[0] 优先（无鉴权 CDN），master_url 备用（带签名）。
+    非 Live 图或无视频流时返回 None。
+    """
+    if not image_item.get('live_photo'):
+        return None
+    stream = image_item.get('stream') or {}
+    h264_list = stream.get('h264') or []
+    if not h264_list:
+        return None
+    chosen = h264_list[0]
+    backup = (chosen.get('backup_urls') or [None])[0]
+    master = chosen.get('master_url')
+    return backup or master
+
+
 def handle_note_info(data):
     note_id = data['id']
     note_url = data['url']
@@ -116,13 +134,22 @@ def handle_note_info(data):
     share_count = data['note_card']['interact_info']['share_count']
     image_list_temp = data['note_card']['image_list']
     image_list = []
+    live_video_list = []
     for image in image_list_temp:
-        try:
-            image_list.append(image['info_list'][1]['url'])
-            # success, msg, img_url = XHS_Apis.get_note_no_water_img(image['info_list'][1]['url'])
-            # image_list.append(img_url)
-        except (KeyError, IndexError, TypeError):
-            pass
+        # 图片：优先用 file_id 拼接无水印高清 JPEG
+        file_id = image.get('file_id')
+        if file_id:
+            image_list.append(
+                f"https://ci.xiaohongshu.com/{file_id}?imageView2/format/jpeg"
+            )
+        else:
+            # 兜底：仍用旧链接
+            try:
+                image_list.append(image['info_list'][1]['url'])
+            except (KeyError, IndexError, TypeError):
+                continue  # 跳过无法提取的图
+        # Live 视频
+        live_video_list.append(_pick_live_video_url(image))
     if note_type == '视频':
         video_cover = image_list[0] if image_list else None
         video_info = data.get('note_card', {}).get('video', {})
@@ -169,6 +196,7 @@ def handle_note_info(data):
         'video_addr': video_addr,
         'video_addr_fallback': video_addr_fallback,
         'image_list': image_list,
+        'live_video_list': live_video_list,
         'tags': tags,
         'upload_time': upload_time,
         'ip_location': ip_location,

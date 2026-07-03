@@ -3,6 +3,7 @@ import unittest
 
 from spider_xhs import XhsApiError, XhsPcClient
 from xhs_utils import xhs_util
+from xhs_utils.data_util import _pick_live_video_url, handle_note_info
 
 
 def sample_raw_note(note_id="note-1"):
@@ -25,15 +26,69 @@ def sample_raw_note(note_id="note-1"):
             },
             "image_list": [
                 {
+                    "file_id": "abc123token",
                     "info_list": [
                         {"url": "https://example.com/small.jpg"},
                         {"url": "https://example.com/full.jpg"},
-                    ]
+                    ],
                 }
             ],
             "tag_list": [{"name": "tag"}],
             "time": 1710000000000,
             "ip_location": "Shanghai",
+        },
+    }
+
+
+def sample_raw_live_note(note_id="live-1"):
+    """Fixture for a Live Photo note with 2 images: one live, one normal."""
+    return {
+        "id": note_id,
+        "note_card": {
+            "type": "normal",
+            "user": {
+                "user_id": "user-2",
+                "nickname": "live_tester",
+                "avatar": "https://example.com/avatar2.jpg",
+            },
+            "title": "Live Sample",
+            "desc": "Live Desc",
+            "interact_info": {
+                "liked_count": "10",
+                "collected_count": "20",
+                "comment_count": "30",
+                "share_count": "40",
+            },
+            "image_list": [
+                {
+                    "file_id": "live_token_001",
+                    "live_photo": True,
+                    "stream": {
+                        "h264": [
+                            {
+                                "master_url": "http://master.example.com/live1.mp4?sign=abc",
+                                "backup_urls": [
+                                    "http://backup.example.com/live1.mp4",
+                                ],
+                            }
+                        ],
+                    },
+                    "info_list": [
+                        {"url": "https://example.com/live_prv.jpg"},
+                        {"url": "https://example.com/live_dft.jpg"},
+                    ],
+                },
+                {
+                    "file_id": "normal_token_002",
+                    "info_list": [
+                        {"url": "https://example.com/normal_prv.jpg"},
+                        {"url": "https://example.com/normal_dft.jpg"},
+                    ],
+                },
+            ],
+            "tag_list": [],
+            "time": 1710000000000,
+            "ip_location": "Beijing",
         },
     }
 
@@ -115,7 +170,8 @@ class XhsPcClientTest(unittest.TestCase):
         self.assertEqual(note["note_id"], "note-1")
         self.assertEqual(note["note_type"], "图集")
         self.assertEqual(note["title"], "Sample")
-        self.assertEqual(note["image_list"], ["https://example.com/full.jpg"])
+        self.assertEqual(note["image_list"], ["https://ci.xiaohongshu.com/abc123token?imageView2/format/jpeg"])
+        self.assertEqual(note["live_video_list"], [None])
 
     def test_search_with_detail_fetches_each_note(self):
         raw = FakeRawApi()
@@ -154,6 +210,71 @@ class XhsPcClientTest(unittest.TestCase):
 
         self.assertTrue((static_dir / "xhs_main_260411.js").exists())
         self.assertTrue((static_dir / "xhs_rap.js").exists())
+
+
+class ImageTokenAndLiveVideoTest(unittest.TestCase):
+    """Tests for token-based image URLs and live_video_list extraction."""
+
+    def test_image_list_uses_token_jpeg_url(self):
+        raw = sample_raw_note()
+        raw["url"] = "https://www.xiaohongshu.com/explore/note-1"
+        result = handle_note_info(raw)
+
+        self.assertEqual(
+            result["image_list"],
+            ["https://ci.xiaohongshu.com/abc123token?imageView2/format/jpeg"],
+        )
+
+    def test_live_video_list_extracts_backup_first(self):
+        raw = sample_raw_live_note()
+        raw["url"] = "https://www.xiaohongshu.com/explore/live-1"
+        result = handle_note_info(raw)
+
+        # First image is live: should get backup_urls[0]
+        self.assertEqual(
+            result["live_video_list"][0],
+            "http://backup.example.com/live1.mp4",
+        )
+
+    def test_live_video_list_falls_back_to_master(self):
+        raw = sample_raw_live_note()
+        raw["url"] = "https://www.xiaohongshu.com/explore/live-1"
+        # Remove backup_urls so it must fall back to master
+        raw["note_card"]["image_list"][0]["stream"]["h264"][0]["backup_urls"] = []
+        result = handle_note_info(raw)
+
+        self.assertEqual(
+            result["live_video_list"][0],
+            "http://master.example.com/live1.mp4?sign=abc",
+        )
+
+    def test_non_live_image_has_null_video(self):
+        raw = sample_raw_live_note()
+        raw["url"] = "https://www.xiaohongshu.com/explore/live-1"
+        result = handle_note_info(raw)
+
+        # Second image is not live: should be None
+        self.assertIsNone(result["live_video_list"][1])
+
+    def test_image_fallback_when_no_file_id(self):
+        raw = sample_raw_note()
+        raw["url"] = "https://www.xiaohongshu.com/explore/note-1"
+        # Remove file_id to trigger fallback
+        del raw["note_card"]["image_list"][0]["file_id"]
+        result = handle_note_info(raw)
+
+        self.assertEqual(
+            result["image_list"],
+            ["https://example.com/full.jpg"],
+        )
+
+    def test_pick_live_video_url_non_live(self):
+        item = {"file_id": "abc", "info_list": []}
+        self.assertIsNone(_pick_live_video_url(item))
+
+    def test_pick_live_video_url_no_h264(self):
+        item = {"live_photo": True, "stream": {"h264": []}}
+        self.assertIsNone(_pick_live_video_url(item))
 
 
 if __name__ == "__main__":
