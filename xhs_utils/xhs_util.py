@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 
 import execjs
 from xhs_utils.cookie_util import trans_cookies
+from xhs_utils.xhshow_adapter import XhshowSigningAdapter
 
 _STATIC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'static'))
 
@@ -30,11 +31,20 @@ def _get_static_js(filename):
         _JS_CACHE[filename] = _compile_static_js(filename)
     return _JS_CACHE[filename]
 
-def generate_x_b3_traceid(len=16):
+_XHSHOW_ADAPTER = XhshowSigningAdapter()
+
+
+def _legacy_generate_x_b3_traceid(len=16):
     x_b3_traceid = ""
     for t in range(len):
         x_b3_traceid += "abcdef0123456789"[math.floor(16 * random.random())]
     return x_b3_traceid
+
+
+def generate_x_b3_traceid(len=16):
+    if len != 16:
+        return _legacy_generate_x_b3_traceid(len)
+    return _XHSHOW_ADAPTER.generate_x_b3_traceid(_legacy_generate_x_b3_traceid)
 
 _BASE36_CHARS = "0123456789abcdefghijklmnopqrstuvwxyz"
 
@@ -47,17 +57,26 @@ def _int_to_base36(value):
         result = _BASE36_CHARS[remainder] + result
     return result
 
-def generate_search_id(root_search_id=None):
+def _legacy_generate_search_id(root_search_id=None):
     if root_search_id:
         return root_search_id
     timestamp_ms = int(time.time() * 1000)
     random_part = math.ceil(0x7ffffffe * random.random())
     return _int_to_base36((timestamp_ms << 64) + random_part)
 
-def generate_search_request_id():
+
+def generate_search_id(root_search_id=None):
+    return _XHSHOW_ADAPTER.generate_search_id(root_search_id, _legacy_generate_search_id)
+
+
+def _legacy_generate_search_request_id():
     timestamp_ms = int(time.time() * 1000)
     random_part = math.ceil(0x7ffffffe * random.random())
     return f"{random_part}-{timestamp_ms}"
+
+
+def generate_search_request_id():
+    return _XHSHOW_ADAPTER.generate_search_request_id(_legacy_generate_search_request_id)
 
 def generate_xs_xs_common(a1, api, data='', method='POST'):
     ret = _get_static_js('xhs_main_260411.js').call('get_request_headers_params', api, data, a1, method)
@@ -69,13 +88,22 @@ def generate_xs(a1, api, data=''):
     xs, xt = ret['X-s'], ret['X-t']
     return xs, xt
 
-def generate_xray_traceid():
+def _legacy_generate_xray_traceid():
     return _get_static_js('xhs_xray.js').call('traceId')
 
-def generate_x_rap_param(api, data, app_id=None):
+
+def generate_xray_traceid():
+    return _XHSHOW_ADAPTER.generate_xray_traceid(_legacy_generate_xray_traceid)
+
+
+def _legacy_generate_x_rap_param(api, data, app_id=None):
     if isinstance(data, (dict, list)):
         data = json.dumps(data, separators=(',', ':'), ensure_ascii=False)
     return _get_static_js('xhs_rap.js').call('generate_x_rap_param', api, data or '', app_id)
+
+
+def generate_x_rap_param(api, data, app_id=None):
+    return _XHSHOW_ADAPTER.generate_x_rap_param(api, data, app_id, _legacy_generate_x_rap_param)
 
 def get_common_headers():
     return {
@@ -132,11 +160,21 @@ def generate_headers(a1, api, data='', method='POST'):
         data = json.dumps(data, separators=(',', ':'), ensure_ascii=False)
     return headers, data
 
-def generate_request_params(cookies_str, api, data='', method='POST'):
+def _legacy_generate_request_params(cookies_str, api, data='', method='POST'):
     cookies = trans_cookies(cookies_str)
     a1 = cookies['a1']
     headers, data = generate_headers(a1, api, data, method)
     return headers, cookies, data
+
+
+def generate_request_params(cookies_str, api, data='', method='POST'):
+    return _XHSHOW_ADAPTER.generate_request_params(
+        cookies_str,
+        api,
+        data,
+        method,
+        _legacy_generate_request_params,
+    )
 
 def splice_str(api, params):
     return api + '?' + urlencode(

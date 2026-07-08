@@ -3,7 +3,7 @@ import json
 import re
 import urllib
 from xhs_utils import http_client as requests
-from xhs_utils.xhs_util import splice_str, generate_request_params, generate_x_b3_traceid, generate_search_id, generate_search_request_id, generate_x_rap_param, get_common_headers
+from xhs_utils.xhs_util import splice_str, generate_request_params, generate_x_b3_traceid, generate_search_id, generate_search_request_id, get_common_headers
 from xhs_utils.http_util import REQUEST_TIMEOUT
 from loguru import logger
 
@@ -389,8 +389,6 @@ class XHS_Apis():
                 "xsec_token": kvDist.get('xsec_token', '')
             }
             headers, cookies, data = generate_request_params(cookies_str, api, data, 'POST')
-            headers["x-rap-param"] = generate_x_rap_param(api, data)
-            headers["xy-direction"] = "13"
             response = requests.post(self.base_url + api, headers=headers, data=data, cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
             res_json = response.json()
             success, msg = res_json["success"], res_json["msg"]
@@ -522,7 +520,6 @@ class XHS_Apis():
                 ]
             }
             headers, cookies, data = generate_request_params(cookies_str, api, data, 'POST')
-            headers["x-rap-param"] = generate_x_rap_param(api, data)
             response = requests.post(self.base_url + api, headers=headers, data=data.encode('utf-8'), cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
             res_json = response.json()
             success, msg = res_json["success"], res_json["msg"]

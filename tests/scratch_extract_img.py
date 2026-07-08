@@ -17,7 +17,7 @@ def main():
     client = XhsPcClient(cookies=cookies)
     
     # note_url = "https://www.xiaohongshu.com/explore/6a3e8dd10000000007024b6a?xsec_token=AB4YmCdYGXJth51GCFA2PPtFOZ98hST1jkgZ-WpipgMvQ=&xsec_source=pc_search&source=web_explore_feed"
-    note_url = "https://www.xiaohongshu.com/explore/64300bec0000000007038034?xsec_token=ABqpipXC4rBHyhXnsZJoIqd9X351S2W9bFIv_3hRGCazM%3D&xsec_source=pc_search"
+    note_url = "https://www.xiaohongshu.com/explore/6a2f5a46000000001101c40c?xsec_token=AB-AMt-zNVWd1-fV6ks7g7RxD64A6Y78ajSLW4tKrUZgc=&xsec_source=pc_search&source=web_explore_feed"
     
     print(f"Fetching note info for: {note_url}")
     # Get raw data
