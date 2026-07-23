@@ -14,7 +14,28 @@ class XhsPcClient:
             raise ValueError("cookies must be a non-empty cookie string")
         self.cookies = cookies
         self.proxies = proxies
-        self.raw = raw_api or XHS_Apis()
+        self._owns_raw = raw_api is None
+        self.raw = raw_api if raw_api is not None else XHS_Apis()
+
+    def close(self):
+        if not self._owns_raw:
+            return
+        close = getattr(self.raw, "close", None)
+        if callable(close):
+            close()
+
+    def export_cookies(self):
+        export = getattr(self.raw, "export_cookies", None)
+        if callable(export):
+            return export()
+        return str(self.cookies)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
 
     def homefeed_channels(self):
         return self._unwrap(
@@ -241,5 +262,6 @@ class XhsPcClient:
     def _unwrap(result, operation):
         success, msg, data = result
         if not success:
-            raise XhsApiError(operation, msg)
+            code = data.get("code") if isinstance(data, dict) else None
+            raise XhsApiError(operation, msg, code=code, response=data)
         return data

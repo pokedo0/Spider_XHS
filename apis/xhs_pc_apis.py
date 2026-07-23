@@ -3,6 +3,7 @@ import json
 import re
 import urllib
 from xhs_utils import http_client as requests
+from xhs_utils.http_client import PC_IMPERSONATE, PcHttpSession
 from xhs_utils.xhs_util import splice_str, generate_request_params, generate_x_b3_traceid, generate_search_id, generate_search_request_id, get_common_headers
 from xhs_utils.http_util import REQUEST_TIMEOUT
 from loguru import logger
@@ -11,9 +12,90 @@ from loguru import logger
     获小红书的api
     :param cookies_str: 你的cookies
 """
+_SENSITIVE_ERROR_VALUE_RE = re.compile(
+    r"""(?ix)
+    (
+        ["']?
+        (?:cookie|a1|web_session|x-s-common|x-s|x-t|xsec_token)
+        ["']?
+        \s*[:=]\s*
+    )
+    (?:"[^"]*"|'[^']*'|[^,;\s&]+)
+    """
+)
+
+
+def _sanitize_error_message(error):
+    message = str(error)
+    sanitized = _SENSITIVE_ERROR_VALUE_RE.sub(r"\1<redacted>", message)
+    return sanitized[:500]
+
+
 def _log_api_error(error):
-    logger.exception(f'XHS PC API request failed: {error}')
-    return str(error)
+    logger.exception(
+        "XHS PC API request failed error_type={}",
+        type(error).__name__,
+    )
+    return _sanitize_error_message(error)
+
+
+def _parse_response(response):
+    status = getattr(response, "status_code", None)
+    path = urllib.parse.urlparse(str(getattr(response, "url", ""))).path
+    try:
+        payload = response.json()
+    except Exception as exc:
+        msg = f"XHS API response is not valid JSON (http_status={status})"
+        logger.warning(
+            "XHS PC response parse failed path={} status={} error_type={}",
+            path,
+            status,
+            type(exc).__name__,
+        )
+        return False, msg, None
+    if not isinstance(payload, dict):
+        msg = f"XHS API response is not an object (http_status={status})"
+        logger.warning(
+            "XHS PC response shape invalid path={} status={} payload_type={}",
+            path,
+            status,
+            type(payload).__name__,
+        )
+        return False, msg, payload
+
+    code = payload.get("code")
+    message = next(
+        (
+            str(payload.get(key)).strip()
+            for key in ("msg", "message", "error_msg", "error")
+            if payload.get(key) not in (None, "")
+        ),
+        "",
+    )
+    success_value = payload.get("success")
+    success = bool(success_value) if success_value is not None else code in (0, "0")
+    if status is not None and not 200 <= status < 300:
+        success = False
+    if success:
+        return True, message or "成功", payload
+
+    details = []
+    if status is not None:
+        details.append(f"http_status={status}")
+    if code is not None:
+        details.append(f"code={code}")
+    msg = message or "XHS API request failed"
+    if details:
+        msg = f"{msg} ({', '.join(details)})"
+    logger.warning(
+        "XHS PC API failure path={} status={} code={} message={} payload_keys={}",
+        path,
+        status,
+        code,
+        message[:200],
+        sorted(payload),
+    )
+    return False, msg, payload
 
 
 def _get_query_params(parsed_url):
@@ -24,8 +106,34 @@ def _get_query_params(parsed_url):
 
 
 class XHS_Apis():
-    def __init__(self):
+    def __init__(self, http_session=None):
         self.base_url = "https://edith.xiaohongshu.com"
+        self._owns_http = http_session is None
+        self._http = http_session if http_session is not None else PcHttpSession()
+
+    def _generate_request_params(self, cookies_str, api, data='', method='POST'):
+        effective_cookies = self._http.prepare_cookies(cookies_str)
+        headers, _, body = generate_request_params(
+            effective_cookies,
+            api,
+            data,
+            method,
+        )
+        return headers, body
+
+    def export_cookies(self):
+        return self._http.export_cookies()
+
+    def close(self):
+        if self._owns_http:
+            self._http.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
 
     def get_homefeed_all_channel(self, cookies_str: str, proxies: dict = None):
         """
@@ -35,10 +143,9 @@ class XHS_Apis():
         res_json = None
         try:
             api = "/api/sns/web/v1/homefeed/category"
-            headers, cookies, data = generate_request_params(cookies_str, api, '', 'GET')
-            response = requests.get(self.base_url + api, headers=headers, cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
-            res_json = response.json()
-            success, msg = res_json["success"], res_json["msg"]
+            headers, data = self._generate_request_params(cookies_str, api, '', 'GET')
+            response = self._http.get(self.base_url + api, headers=headers, proxies=proxies, timeout=REQUEST_TIMEOUT)
+            success, msg, res_json = _parse_response(response)
         except Exception as e:
             success = False
             msg = _log_api_error(e)
@@ -75,10 +182,9 @@ class XHS_Apis():
                 ],
                 "need_filter_image": False
             }
-            headers, cookies, trans_data = generate_request_params(cookies_str, api, data, 'POST')
-            response = requests.post(self.base_url + api, headers=headers, data=trans_data, cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
-            res_json = response.json()
-            success, msg = res_json["success"], res_json["msg"]
+            headers, trans_data = self._generate_request_params(cookies_str, api, data, 'POST')
+            response = self._http.post(self.base_url + api, headers=headers, data=trans_data, proxies=proxies, timeout=REQUEST_TIMEOUT)
+            success, msg, res_json = _parse_response(response)
         except Exception as e:
             success = False
             msg = _log_api_error(e)
@@ -129,10 +235,9 @@ class XHS_Apis():
                 "target_user_id": user_id
             }
             splice_api = splice_str(api, params)
-            headers, cookies, data = generate_request_params(cookies_str, splice_api, '', 'GET')
-            response = requests.get(self.base_url + splice_api, headers=headers, cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
-            res_json = response.json()
-            success, msg = res_json["success"], res_json["msg"]
+            headers, data = self._generate_request_params(cookies_str, splice_api, '', 'GET')
+            response = self._http.get(self.base_url + splice_api, headers=headers, proxies=proxies, timeout=REQUEST_TIMEOUT)
+            success, msg, res_json = _parse_response(response)
         except Exception as e:
             success = False
             msg = _log_api_error(e)
@@ -147,10 +252,9 @@ class XHS_Apis():
         res_json = None
         try:
             api = f"/api/sns/web/v1/user/selfinfo"
-            headers, cookies, data = generate_request_params(cookies_str, api, '', 'GET')
-            response = requests.get(self.base_url + api, headers=headers, cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
-            res_json = response.json()
-            success, msg = res_json["success"], res_json["msg"]
+            headers, data = self._generate_request_params(cookies_str, api, '', 'GET')
+            response = self._http.get(self.base_url + api, headers=headers, proxies=proxies, timeout=REQUEST_TIMEOUT)
+            success, msg, res_json = _parse_response(response)
         except Exception as e:
             success = False
             msg = _log_api_error(e)
@@ -166,10 +270,9 @@ class XHS_Apis():
         res_json = None
         try:
             api = f"/api/sns/web/v2/user/me"
-            headers, cookies, data = generate_request_params(cookies_str, api, '', 'GET')
-            response = requests.get(self.base_url + api, headers=headers, cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
-            res_json = response.json()
-            success, msg = res_json["success"], res_json["msg"]
+            headers, data = self._generate_request_params(cookies_str, api, '', 'GET')
+            response = self._http.get(self.base_url + api, headers=headers, proxies=proxies, timeout=REQUEST_TIMEOUT)
+            success, msg, res_json = _parse_response(response)
         except Exception as e:
             success = False
             msg = _log_api_error(e)
@@ -195,10 +298,9 @@ class XHS_Apis():
                 "xsec_source": xsec_source,
             }
             splice_api = splice_str(api, params)
-            headers, cookies, data = generate_request_params(cookies_str, splice_api, '', 'GET')
-            response = requests.get(self.base_url + splice_api, headers=headers, cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
-            res_json = response.json()
-            success, msg = res_json["success"], res_json["msg"]
+            headers, data = self._generate_request_params(cookies_str, splice_api, '', 'GET')
+            response = self._http.get(self.base_url + splice_api, headers=headers, proxies=proxies, timeout=REQUEST_TIMEOUT)
+            success, msg, res_json = _parse_response(response)
         except Exception as e:
             success = False
             msg = _log_api_error(e)
@@ -257,10 +359,9 @@ class XHS_Apis():
                 "xsec_source": xsec_source,
             }
             splice_api = splice_str(api, params)
-            headers, cookies, data = generate_request_params(cookies_str, splice_api, '', 'GET')
-            response = requests.get(self.base_url + splice_api, headers=headers, cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
-            res_json = response.json()
-            success, msg = res_json["success"], res_json["msg"]
+            headers, data = self._generate_request_params(cookies_str, splice_api, '', 'GET')
+            response = self._http.get(self.base_url + splice_api, headers=headers, proxies=proxies, timeout=REQUEST_TIMEOUT)
+            success, msg, res_json = _parse_response(response)
         except Exception as e:
             success = False
             msg = _log_api_error(e)
@@ -319,10 +420,9 @@ class XHS_Apis():
                 "xsec_source": xsec_source,
             }
             splice_api = splice_str(api, params)
-            headers, cookies, data = generate_request_params(cookies_str, splice_api, '', 'GET')
-            response = requests.get(self.base_url + splice_api, headers=headers, cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
-            res_json = response.json()
-            success, msg = res_json["success"], res_json["msg"]
+            headers, data = self._generate_request_params(cookies_str, splice_api, '', 'GET')
+            response = self._http.get(self.base_url + splice_api, headers=headers, proxies=proxies, timeout=REQUEST_TIMEOUT)
+            success, msg, res_json = _parse_response(response)
         except Exception as e:
             success = False
             msg = _log_api_error(e)
@@ -388,10 +488,9 @@ class XHS_Apis():
                 "xsec_source": kvDist['xsec_source'] if 'xsec_source' in kvDist else "pc_search",
                 "xsec_token": kvDist.get('xsec_token', '')
             }
-            headers, cookies, data = generate_request_params(cookies_str, api, data, 'POST')
-            response = requests.post(self.base_url + api, headers=headers, data=data, cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
-            res_json = response.json()
-            success, msg = res_json["success"], res_json["msg"]
+            headers, data = self._generate_request_params(cookies_str, api, data, 'POST')
+            response = self._http.post(self.base_url + api, headers=headers, data=data, proxies=proxies, timeout=REQUEST_TIMEOUT)
+            success, msg, res_json = _parse_response(response)
         except Exception as e:
             success = False
             msg = _log_api_error(e)
@@ -412,10 +511,9 @@ class XHS_Apis():
                 "keyword": urllib.parse.quote(word)
             }
             splice_api = splice_str(api, params)
-            headers, cookies, data = generate_request_params(cookies_str, splice_api, '', 'GET')
-            response = requests.get(self.base_url + splice_api, headers=headers, cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
-            res_json = response.json()
-            success, msg = res_json["success"], res_json["msg"]
+            headers, data = self._generate_request_params(cookies_str, splice_api, '', 'GET')
+            response = self._http.get(self.base_url + splice_api, headers=headers, proxies=proxies, timeout=REQUEST_TIMEOUT)
+            success, msg, res_json = _parse_response(response)
         except Exception as e:
             success = False
             msg = _log_api_error(e)
@@ -519,10 +617,9 @@ class XHS_Apis():
                     "avif"
                 ]
             }
-            headers, cookies, data = generate_request_params(cookies_str, api, data, 'POST')
-            response = requests.post(self.base_url + api, headers=headers, data=data.encode('utf-8'), cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
-            res_json = response.json()
-            success, msg = res_json["success"], res_json["msg"]
+            headers, data = self._generate_request_params(cookies_str, api, data, 'POST')
+            response = self._http.post(self.base_url + api, headers=headers, data=data.encode('utf-8'), proxies=proxies, timeout=REQUEST_TIMEOUT)
+            success, msg, res_json = _parse_response(response)
         except Exception as e:
             success = False
             msg = _log_api_error(e)
@@ -586,10 +683,9 @@ class XHS_Apis():
                     "request_id": generate_search_request_id()
                 }
             }
-            headers, cookies, data = generate_request_params(cookies_str, api, data, 'POST')
-            response = requests.post(self.base_url + api, headers=headers, data=data.encode('utf-8'), cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
-            res_json = response.json()
-            success, msg = res_json["success"], res_json["msg"]
+            headers, data = self._generate_request_params(cookies_str, api, data, 'POST')
+            response = self._http.post(self.base_url + api, headers=headers, data=data.encode('utf-8'), proxies=proxies, timeout=REQUEST_TIMEOUT)
+            success, msg, res_json = _parse_response(response)
         except Exception as e:
             success = False
             msg = _log_api_error(e)
@@ -643,10 +739,9 @@ class XHS_Apis():
                 "xsec_token": xsec_token
             }
             splice_api = splice_str(api, params)
-            headers, cookies, data = generate_request_params(cookies_str, splice_api, '', 'GET')
-            response = requests.get(self.base_url + splice_api, headers=headers, cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
-            res_json = response.json()
-            success, msg = res_json["success"], res_json["msg"]
+            headers, data = self._generate_request_params(cookies_str, splice_api, '', 'GET')
+            response = self._http.get(self.base_url + splice_api, headers=headers, proxies=proxies, timeout=REQUEST_TIMEOUT)
+            success, msg, res_json = _parse_response(response)
         except Exception as e:
             success = False
             msg = _log_api_error(e)
@@ -700,10 +795,9 @@ class XHS_Apis():
                 "xsec_token": xsec_token
             }
             splice_api = splice_str(api, params)
-            headers, cookies, data = generate_request_params(cookies_str, splice_api, '', 'GET')
-            response = requests.get(self.base_url + splice_api, headers=headers, cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
-            res_json = response.json()
-            success, msg = res_json["success"], res_json["msg"]
+            headers, data = self._generate_request_params(cookies_str, splice_api, '', 'GET')
+            response = self._http.get(self.base_url + splice_api, headers=headers, proxies=proxies, timeout=REQUEST_TIMEOUT)
+            success, msg, res_json = _parse_response(response)
         except Exception as e:
             success = False
             msg = _log_api_error(e)
@@ -773,10 +867,9 @@ class XHS_Apis():
         res_json = None
         try:
             api = "/api/sns/web/unread_count"
-            headers, cookies, data = generate_request_params(cookies_str, api, '', 'GET')
-            response = requests.get(self.base_url + api, headers=headers, cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
-            res_json = response.json()
-            success, msg = res_json["success"], res_json["msg"]
+            headers, data = self._generate_request_params(cookies_str, api, '', 'GET')
+            response = self._http.get(self.base_url + api, headers=headers, proxies=proxies, timeout=REQUEST_TIMEOUT)
+            success, msg, res_json = _parse_response(response)
         except Exception as e:
             success = False
             msg = _log_api_error(e)
@@ -797,10 +890,9 @@ class XHS_Apis():
                 "cursor": cursor
             }
             splice_api = splice_str(api, params)
-            headers, cookies, data = generate_request_params(cookies_str, splice_api, '', 'GET')
-            response = requests.get(self.base_url + splice_api, headers=headers, cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
-            res_json = response.json()
-            success, msg = res_json["success"], res_json["msg"]
+            headers, data = self._generate_request_params(cookies_str, splice_api, '', 'GET')
+            response = self._http.get(self.base_url + splice_api, headers=headers, proxies=proxies, timeout=REQUEST_TIMEOUT)
+            success, msg, res_json = _parse_response(response)
         except Exception as e:
             success = False
             msg = _log_api_error(e)
@@ -847,10 +939,9 @@ class XHS_Apis():
                 "cursor": cursor
             }
             splice_api = splice_str(api, params)
-            headers, cookies, data = generate_request_params(cookies_str, splice_api, '', 'GET')
-            response = requests.get(self.base_url + splice_api, headers=headers, cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
-            res_json = response.json()
-            success, msg = res_json["success"], res_json["msg"]
+            headers, data = self._generate_request_params(cookies_str, splice_api, '', 'GET')
+            response = self._http.get(self.base_url + splice_api, headers=headers, proxies=proxies, timeout=REQUEST_TIMEOUT)
+            success, msg, res_json = _parse_response(response)
         except Exception as e:
             success = False
             msg = _log_api_error(e)
@@ -897,10 +988,9 @@ class XHS_Apis():
                 "cursor": cursor
             }
             splice_api = splice_str(api, params)
-            headers, cookies, data = generate_request_params(cookies_str, splice_api, '', 'GET')
-            response = requests.get(self.base_url + splice_api, headers=headers, cookies=cookies, proxies=proxies, timeout=REQUEST_TIMEOUT)
-            res_json = response.json()
-            success, msg = res_json["success"], res_json["msg"]
+            headers, data = self._generate_request_params(cookies_str, splice_api, '', 'GET')
+            response = self._http.get(self.base_url + splice_api, headers=headers, proxies=proxies, timeout=REQUEST_TIMEOUT)
+            success, msg, res_json = _parse_response(response)
         except Exception as e:
             success = False
             msg = _log_api_error(e)
@@ -945,7 +1035,12 @@ class XHS_Apis():
         try:
             headers = get_common_headers()
             url = f"https://www.xiaohongshu.com/explore/{note_id}"
-            response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+            response = requests.get(
+                url,
+                headers=headers,
+                impersonate=PC_IMPERSONATE,
+                timeout=REQUEST_TIMEOUT,
+            )
             res = response.text
             video_addr = re.findall(r'<meta name="og:video" content="(.*?)">', res)[0]
         except Exception as e:

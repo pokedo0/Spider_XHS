@@ -118,8 +118,11 @@ class TestVideoDownloadIntegration(unittest.TestCase):
     def setUpClass(cls):
         load_dotenv()
         cls.cookies = os.getenv("COOKIES", "")
+        cls.integration_enabled = os.getenv("RUN_XHS_INTEGRATION") == "1"
 
     def _skip_if_no_cookies(self):
+        if not self.integration_enabled:
+            self.skipTest("set RUN_XHS_INTEGRATION=1 to run live XHS tests")
         if not self.cookies:
             self.skipTest("COOKIES not set in .env — skipping integration test")
 
